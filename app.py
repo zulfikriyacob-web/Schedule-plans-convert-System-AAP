@@ -231,32 +231,3 @@ if uploaded_file is not None:
         
     except Exception as e:
         st.error(f"Maaf, ada ralat berlaku: {e}")
-```eof
-```text:requirements.txt
-streamlit
-pandas
-openpyxl
-```eof
-
-Itu dia! Ada dua fail di atas. Sekarang macam mana nak buat Web App ni *live* di internet supaya staf bos boleh masuk ikut URL (macam `convert-jadual-kilang.streamlit.app`)? Senang sangat, ini langkahnya:
-
-### Cara *Deploy* (Buat Live):
-
-1. **Buat Akaun GitHub Percuma:**
-   * Pergi ke [github.com](https://github.com/) dan buat satu akaun (jika bos tiada lagi).
-   * Lepas login, klik tanda `+` di kanan atas dan pilih **"New repository"**.
-   * Letak nama (contoh: `auto-converter`). Pastikan set kepada *Public* dan tekan **"Create repository"**.
-   * Di muka depan *repository* tu, cari butang **"uploading an existing file"**. 
-   * *Upload* dua fail yang saya buat di atas (`app.py` dan `requirements.txt`). Simpan (*Commit*).
-
-2. **Sambung ke Streamlit (Server Percuma):**
-   * Pergi ke laman web [share.streamlit.io](https://share.streamlit.io/).
-   * Klik **"Continue with GitHub"** (ia akan *link* dengan GitHub bos tadi).
-   * Klik butang besar **"New app"**.
-   * Cari dan pilih repository `auto-converter` bos tadi.
-   * Pastikan fail yang akan di-*run* adalah `app.py`.
-   * Klik **"Deploy!"**
-
-**Siap!** Dalam masa seminit dua, ia akan tunjuk laman web tu berfungsi sepenuhnya! Bos boleh *copy link* kat bar alamat di atas dan terus kongsi kat WhatsApp/email kepada *team* bos.
-
-Nanti setiap bulan kalau staf *upload* apa-apa file pun yang di format sama, sistem automatik siapkan tab `DM`, `OH`, `DM_OT`, dan `OH_OT` sekelip mata. Boleh cuba dulu ikut step ni, kalau sangkut kat mana-mana bagitahu saya!
