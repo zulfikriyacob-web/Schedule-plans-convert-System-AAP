@@ -5,10 +5,8 @@ from io import BytesIO
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-# Konfigurasi muka depan Web App
 st.set_page_config(page_title="AAP Schedule Converter", page_icon="🏭", layout="wide")
 
-# CSS Khas untuk jadikan UI nampak 'Sempoi'
 st.markdown("""
     <style>
     .main-title {
@@ -36,16 +34,14 @@ with st.expander("💡 Cara Penggunaan (Klik Sini)"):
     st.info("""
     1. Pastikan fail Excel asal mempunyai sheet **WO LISTING DM**, **WO LISTING OH**, dan sheet untuk **PACK**.
     2. Tarik dan lepaskan (*drag & drop*) fail tersebut ke dalam ruang muat naik di bawah.
-    3. Sistem akan memproses data, menyusun *merged cells*, dan mengira OT secara automatik.
+    3. Sistem akan memproses data, menyusun *merged cells*, dan memproses jadual OT dengan tepat.
     4. Klik butang Download untuk dapatkan fail database yang dah bersih!
     """)
 
 st.divider()
 
-# Tempat upload
 uploaded_file = st.file_uploader("📂 Letak fail Excel bos kat sini...", type=['xlsx'])
 
-# Fungsi-fungsi pemprosesan
 def find_sheet(xls, keywords):
     for sheet in xls.sheet_names:
         if all(k.upper() in sheet.upper() for k in keywords):
@@ -75,6 +71,7 @@ def process_wo_sheet(df):
     
     df_clean = df_clean.rename(columns=lambda x: col_mapping.get(x, x))
     
+    # Ini ffill untuk jadual WO LISTING (memang kena fill down supaya jadi database)
     cols_to_ffill = ['PROD_DATE', 'LOT_NUMBER', 'MODEL', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 'DI_DATE']
     for col in cols_to_ffill:
         if col in df_clean.columns:
@@ -175,12 +172,21 @@ def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
     df_ot = df_pack.iloc[:, [date_col_idx, ot_col_idx]].copy()
     df_ot.columns = ['DATE', f'{prefix}_L1']
     
-    # Tukar format tarikh dan dapatkan nama hari
+    # 1. Bersihkan column Tarikh
     df_ot['DATE_PARSED'] = pd.to_datetime(df_ot['DATE'], errors='coerce')
-    df_ot = df_ot.dropna(subset=['DATE_PARSED']) # Buang baris yang tiada tarikh
+    df_ot = df_ot.dropna(subset=['DATE_PARSED']) 
     
-    df_ot['DAY'] = df_ot['DATE_PARSED'].dt.day_name().str.upper() # Dapatkan hari MONDAY, TUESDAY dll
+    # 2. PENTING: Kerana sel OT di-merge di Excel, kita perlu fill down (ffill) 
+    # nilai OT tu ke semua baris tarikh yang sama
+    df_ot[f'{prefix}_L1'] = df_ot[f'{prefix}_L1'].ffill()
+    
     df_ot['DATE'] = df_ot['DATE_PARSED'].dt.date
+    
+    # 3. PENTING: Buang tarikh yang berulang supaya tinggal 1 tarikh (1 baris) sahaja untuk setiap hari
+    df_ot = df_ot.drop_duplicates(subset=['DATE'], keep='first')
+    
+    # Dapatkan nama hari
+    df_ot['DAY'] = pd.to_datetime(df_ot['DATE']).dt.day_name().str.upper()
     
     # Masukkan column L2 yang kosong
     df_ot[f'{prefix}_L2'] = np.nan
@@ -211,7 +217,7 @@ if uploaded_file is not None:
             df_oh_raw = pd.read_excel(xls, sheet_name=oh_sheet_name, header=None)
             df_oh = process_wo_sheet(df_oh_raw)
             
-            st.write("Mengira dan memisahkan data OT mengikut hari...")
+            st.write("Menyusun dan membuang tarikh OT yang berulang...")
             df_pack = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
             df_dm_ot = process_ot_sheet(df_pack, 13, 15, "DM")
             df_oh_ot = process_ot_sheet(df_pack, 34, 36, "OH")
@@ -244,7 +250,7 @@ if uploaded_file is not None:
                             cell.border = border
                             cell.alignment = alignment
                             if isinstance(cell.value, pd.Timestamp) or type(cell.value).__name__ == 'date':
-                                cell.number_format = 'DD/MM/YYYY' # Format khas tarikh macam bos nak
+                                cell.number_format = 'DD/MM/YYYY'
                             
                     for column_cells in ws.columns:
                         length = max(len(str(cell.value)) for cell in column_cells)
@@ -259,9 +265,8 @@ if uploaded_file is not None:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Kuantiti WO (DM)", f"{len(df_dm)} Baris")
         col2.metric("Kuantiti WO (OH)", f"{len(df_oh)} Baris")
-        # Kira cuma yang ada data OT (tak kosong)
-        col3.metric("Rekod OT (DM)", f"{df_dm_ot['DM_L1'].notna().sum()} Hari") 
-        col4.metric("Rekod OT (OH)", f"{df_oh_ot['OH_L1'].notna().sum()} Hari")
+        col3.metric("Rekod Unik (DM_OT)", f"{len(df_dm_ot)} Hari") 
+        col4.metric("Rekod Unik (OH_OT)", f"{len(df_oh_ot)} Hari")
         
         st.markdown("### 👀 Intai Jadual")
         tab1, tab2, tab3, tab4 = st.tabs(["Sheet DM", "Sheet OH", "Sheet DM_OT", "Sheet OH_OT"])
@@ -274,8 +279,10 @@ if uploaded_file is not None:
             st.caption("Memaparkan 15 rekod terawal...")
         with tab3:
             st.dataframe(df_dm_ot, use_container_width=True)
+            st.caption("Tarikh berulang telah dibuang, memaparkan 1 rekod per hari.")
         with tab4:
             st.dataframe(df_oh_ot, use_container_width=True)
+            st.caption("Tarikh berulang telah dibuang, memaparkan 1 rekod per hari.")
         
         st.divider()
         
