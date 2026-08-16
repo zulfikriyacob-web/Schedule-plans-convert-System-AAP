@@ -45,7 +45,7 @@ st.divider()
 # Tempat upload
 uploaded_file = st.file_uploader("📂 Letak fail Excel bos kat sini...", type=['xlsx'])
 
-# Fungsi-fungsi pemprosesan (Sama macam sebelum ni)
+# Fungsi-fungsi pemprosesan
 def find_sheet(xls, keywords):
     for sheet in xls.sheet_names:
         if all(k.upper() in sheet.upper() for k in keywords):
@@ -168,25 +168,30 @@ def process_wo_sheet(df):
     
     return df_final
 
-def process_ot_sheet(df_pack, date_col_idx, ot_col_idx):
+def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
     if ot_col_idx >= len(df_pack.columns):
-        return pd.DataFrame(columns=['PROD_DATE', 'OT'])
+        return pd.DataFrame(columns=['DATE', 'DAY', f'{prefix}_L1', f'{prefix}_L2'])
     
     df_ot = df_pack.iloc[:, [date_col_idx, ot_col_idx]].copy()
-    df_ot.columns = ['PROD_DATE', 'OT']
+    df_ot.columns = ['DATE', f'{prefix}_L1']
     
-    df_ot['PROD_DATE_PARSED'] = pd.to_datetime(df_ot['PROD_DATE'], errors='coerce')
-    df_ot = df_ot.dropna(subset=['PROD_DATE_PARSED'])
-    df_ot['PROD_DATE'] = df_ot['PROD_DATE_PARSED'].dt.date
-    df_ot = df_ot.drop(columns=['PROD_DATE_PARSED'])
+    # Tukar format tarikh dan dapatkan nama hari
+    df_ot['DATE_PARSED'] = pd.to_datetime(df_ot['DATE'], errors='coerce')
+    df_ot = df_ot.dropna(subset=['DATE_PARSED']) # Buang baris yang tiada tarikh
     
-    df_ot = df_ot.dropna(subset=['OT'])
+    df_ot['DAY'] = df_ot['DATE_PARSED'].dt.day_name().str.upper() # Dapatkan hari MONDAY, TUESDAY dll
+    df_ot['DATE'] = df_ot['DATE_PARSED'].dt.date
+    
+    # Masukkan column L2 yang kosong
+    df_ot[f'{prefix}_L2'] = np.nan
+    
+    # Susun kedudukan column
+    df_ot = df_ot[['DATE', 'DAY', f'{prefix}_L1', f'{prefix}_L2']]
+    
     return df_ot
-
 
 if uploaded_file is not None:
     try:
-        # UI Status Processing
         with st.status("Kilang memproses data berjalan...", expanded=True) as status:
             st.write("Menganalisis fail Excel...")
             xls = pd.ExcelFile(uploaded_file)
@@ -206,10 +211,10 @@ if uploaded_file is not None:
             df_oh_raw = pd.read_excel(xls, sheet_name=oh_sheet_name, header=None)
             df_oh = process_wo_sheet(df_oh_raw)
             
-            st.write("Mengira dan memisahkan data OT...")
+            st.write("Mengira dan memisahkan data OT mengikut hari...")
             df_pack = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
-            df_dm_ot = process_ot_sheet(df_pack, 13, 15)
-            df_oh_ot = process_ot_sheet(df_pack, 34, 36)
+            df_dm_ot = process_ot_sheet(df_pack, 13, 15, "DM")
+            df_oh_ot = process_ot_sheet(df_pack, 34, 36, "OH")
             
             st.write("Membungkus ke dalam format akhir...")
             output = BytesIO()
@@ -239,29 +244,25 @@ if uploaded_file is not None:
                             cell.border = border
                             cell.alignment = alignment
                             if isinstance(cell.value, pd.Timestamp) or type(cell.value).__name__ == 'date':
-                                cell.number_format = 'YYYY-MM-DD'
+                                cell.number_format = 'DD/MM/YYYY' # Format khas tarikh macam bos nak
                             
                     for column_cells in ws.columns:
                         length = max(len(str(cell.value)) for cell in column_cells)
                         ws.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 30)
 
             processed_data = output.getvalue()
-            
-            # Status lengkap
             status.update(label="Proses Selesai Sepenuhnya!", state="complete", expanded=False)
         
-        # Kesan khas belon bila berjaya
         st.balloons()
         
-        # Dashboard Metrik Ringkas
         st.markdown("### 📊 Rumusan Ekstrak Data")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Kuantiti WO (DM)", f"{len(df_dm)} Baris")
         col2.metric("Kuantiti WO (OH)", f"{len(df_oh)} Baris")
-        col3.metric("Rekod OT (DM)", f"{len(df_dm_ot)} Hari")
-        col4.metric("Rekod OT (OH)", f"{len(df_oh_ot)} Hari")
+        # Kira cuma yang ada data OT (tak kosong)
+        col3.metric("Rekod OT (DM)", f"{df_dm_ot['DM_L1'].notna().sum()} Hari") 
+        col4.metric("Rekod OT (OH)", f"{df_oh_ot['OH_L1'].notna().sum()} Hari")
         
-        # Ruang Preview Jadual
         st.markdown("### 👀 Intai Jadual")
         tab1, tab2, tab3, tab4 = st.tabs(["Sheet DM", "Sheet OH", "Sheet DM_OT", "Sheet OH_OT"])
         
@@ -278,7 +279,6 @@ if uploaded_file is not None:
         
         st.divider()
         
-        # Butang Download lebih menonjol
         st.download_button(
             label="📥 DOWNLOAD DATABASE SEKARANG",
             data=processed_data,
