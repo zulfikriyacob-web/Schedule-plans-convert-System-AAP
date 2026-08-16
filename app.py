@@ -46,7 +46,6 @@ st.divider()
 
 uploaded_file = st.file_uploader("📂 Letak fail Excel bos kat sini...", type=['xlsx'])
 
-# Kalau user tukar fail, reset balik butang bypass tu
 if uploaded_file is None:
     st.session_state.bypass_warning = False
 
@@ -56,7 +55,7 @@ def find_sheet(xls, keywords):
             return sheet
     return None
 
-def process_wo_sheet(df):
+def process_wo_sheet(df, bypass_mode=False):
     header_idx = 1
     headers = df.iloc[header_idx].values
     df_clean = df.iloc[header_idx + 1:].copy()
@@ -81,7 +80,13 @@ def process_wo_sheet(df):
     
     df_clean = df_clean.rename(columns=lambda x: col_mapping.get(x, x))
     
+    # LOGIK BARU: Senarai column yang perlu di-fill down
     cols_to_ffill = ['PROD_DATE', 'LOT_NUMBER', 'MODEL', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 'DI_DATE']
+    
+    # Jika bypass diaktifkan, KELUARKAN LOT_NUMBER dari senarai Fill Down (Biar lopong)
+    if bypass_mode:
+        cols_to_ffill.remove('LOT_NUMBER')
+        
     for col in cols_to_ffill:
         if col in df_clean.columns:
             df_clean[col] = df_clean[col].ffill()
@@ -205,7 +210,6 @@ if uploaded_file is not None:
             st.error("Ralat: Tidak menjumpai Sheet yang diperlukan.")
             st.stop()
             
-        # 🔴 FORENSIC CROSS-CHECKING LOT NUMBERS
         df_dm_raw_check = pd.read_excel(xls, sheet_name=dm_sheet_name, header=1)
         df_oh_raw_check = pd.read_excel(xls, sheet_name=oh_sheet_name, header=1)
         df_pack_check = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
@@ -218,7 +222,6 @@ if uploaded_file is not None:
         missing_lots = pack_lots - all_wo_lots
         missing_lots = {lot for lot in missing_lots if lot.startswith('M')}
         
-        # Block sistem HANYA jika ada ralat DAN user belum tekan butang Bypass
         if missing_lots and not st.session_state.bypass_warning:
             st.error("🚨 **AMARAN: DATA TERTINGGAL DALAM FAIL EXCEL ASAL!**")
             st.warning(f"Sistem mendapati Lot Number ini wujud dalam sheet **PACK**, tetapi **TIDAK DITULIS / HILANG** dalam sheet **WO LISTING DM/OH**:\n\n👉 **{', '.join(missing_lots)}**")
@@ -229,21 +232,22 @@ if uploaded_file is not None:
             with col_a:
                 if st.button("⚠️ Abaikan Amaran & Teruskan Download"):
                     st.session_state.bypass_warning = True
-                    st.rerun() # Rerun skrip supaya dia pass block ini
+                    st.rerun() 
             with col_b:
                 if st.button("❌ Batal & Buat Semula"):
                     st.session_state.bypass_warning = False
                     st.rerun()
-            st.stop() # Hentikan di sini sehingga user pilih butang
+            st.stop()
             
-        # --- JIKA TIADA RALAT ATAU USER DAH TEKAN BYPASS ---
         with st.status("Kilang memproses data berjalan...", expanded=True) as status:
             st.write("Mengekstrak data barisan DM & OH...")
             df_dm_raw = pd.read_excel(xls, sheet_name=dm_sheet_name, header=None)
-            df_dm = process_wo_sheet(df_dm_raw)
+            
+            # HANTAR STATUS BYPASS KE DALAM FUNGSI PEMPROSESAN
+            df_dm = process_wo_sheet(df_dm_raw, bypass_mode=st.session_state.bypass_warning)
             
             df_oh_raw = pd.read_excel(xls, sheet_name=oh_sheet_name, header=None)
-            df_oh = process_wo_sheet(df_oh_raw)
+            df_oh = process_wo_sheet(df_oh_raw, bypass_mode=st.session_state.bypass_warning)
             
             st.write("Menyusun jadual OT...")
             df_dm_ot = process_ot_sheet(df_pack_check, 13, 15, "DM")
@@ -285,7 +289,6 @@ if uploaded_file is not None:
         
         st.balloons()
         
-        # Dashboard
         st.markdown("### 📊 Rumusan Ekstrak Data")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Kuantiti WO (DM)", f"{len(df_dm)} Baris")
@@ -308,7 +311,7 @@ if uploaded_file is not None:
         st.divider()
         
         if st.session_state.bypass_warning:
-            st.warning("⚠️ Fail ini dijana dengan Amaran Data Tidak Lengkap yang telah diabaikan.")
+            st.warning("⚠️ Fail ini dijana dengan Amaran Data Tidak Lengkap yang telah diabaikan. (Lot Number dibiarkan KOSONG)")
             
         st.download_button(
             label="📥 DOWNLOAD DATABASE SEKARANG",
