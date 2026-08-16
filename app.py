@@ -5,11 +5,8 @@ from io import BytesIO
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
+# Konfigurasi Muka Depan Web App
 st.set_page_config(page_title="AAP Schedule Converter", page_icon="🏭", layout="wide")
-
-# Set up memory (Session State) untuk butang Bypass
-if 'bypass_warning' not in st.session_state:
-    st.session_state.bypass_warning = False
 
 st.markdown("""
     <style>
@@ -32,22 +29,19 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-title">🚀 AAP Auto-Converter</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Tukar format jadual kilang dengan sekali petik. Cepat, kemas, dan sempoi.</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Sistem Pengekstrakan Jadual Kilang Rasmi (DM & OH)</p>', unsafe_allow_html=True)
 
 with st.expander("💡 Cara Penggunaan (Klik Sini)"):
     st.info("""
-    1. Pastikan fail Excel asal mempunyai sheet **WO LISTING DM**, **WO LISTING OH**, dan sheet untuk **PACK**.
+    1. Pastikan fail Excel asal mempunyai sheet **WO LISTING DM**, **WO LISTING OH**, dan sheet **PACK**.
     2. Tarik dan lepaskan (*drag & drop*) fail tersebut ke dalam ruang muat naik di bawah.
-    3. Sistem akan memproses data, menyusun *merged cells*, dan memproses jadual OT dengan tepat.
-    4. Klik butang Download untuk dapatkan fail database yang dah bersih!
+    3. Sistem akan memproses data, buang *space* tersembunyi, dan susun format *column* secara automatik.
+    4. Klik butang Download untuk dapatkan fail database yang dah siap di-*lock* formatnya.
     """)
 
 st.divider()
 
-uploaded_file = st.file_uploader("📂 Letak fail Excel bos kat sini...", type=['xlsx'])
-
-if uploaded_file is None:
-    st.session_state.bypass_warning = False
+uploaded_file = st.file_uploader("📂 Muat naik fail Excel jadual di sini...", type=['xlsx'])
 
 def find_sheet(xls, keywords):
     for sheet in xls.sheet_names:
@@ -55,15 +49,17 @@ def find_sheet(xls, keywords):
             return sheet
     return None
 
-def process_wo_sheet(df, bypass_mode=False):
+def process_wo_sheet(df):
     header_idx = 1
     headers = df.iloc[header_idx].values
     df_clean = df.iloc[header_idx + 1:].copy()
     df_clean.columns = headers
     df_clean = df_clean.dropna(how='all')
     
+    # Anti-Hantu: Tukar cell yang cuma ada spacebar kepada NaN
     df_clean = df_clean.replace(r'^\s*$', np.nan, regex=True)
     
+    # Pemetaan (Rename) nama column lama ke nama baru rasmi
     col_mapping = {
         'PROD DATE': 'PROD_DATE',
         'LOT NUMBER': 'LOT_NUMBER',
@@ -80,17 +76,13 @@ def process_wo_sheet(df, bypass_mode=False):
     
     df_clean = df_clean.rename(columns=lambda x: col_mapping.get(x, x))
     
-    # LOGIK BARU: Senarai column yang perlu di-fill down
+    # Fill Down klasik
     cols_to_ffill = ['PROD_DATE', 'LOT_NUMBER', 'MODEL', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 'DI_DATE']
-    
-    # Jika bypass diaktifkan, KELUARKAN LOT_NUMBER dari senarai Fill Down (Biar lopong)
-    if bypass_mode:
-        cols_to_ffill.remove('LOT_NUMBER')
-        
     for col in cols_to_ffill:
         if col in df_clean.columns:
             df_clean[col] = df_clean[col].ffill()
     
+    # Pengurusan Tarikh
     date_columns = ['PROD_DATE', 'WO_SUPPLY_TO_IMC_DATE', 'DI_DATE']
     for col in date_columns:
         if col in df_clean.columns:
@@ -106,6 +98,7 @@ def process_wo_sheet(df, bypass_mode=False):
     if 'COLOUR_PART' in df_clean.columns:
         df_clean['COLOUR_PART'] = df_clean['COLOUR_PART'].astype(str).str.replace('B$', '', regex=True)
         
+    # Extra columns generasi automatik
     df_clean['CUSTOMER_TYPE'] = 'OEM'
     
     def map_colour(c):
@@ -165,23 +158,31 @@ def process_wo_sheet(df, bypass_mode=False):
     df_clean['ADDITIONAL_ATTRIBUTE'] = np.nan
     df_clean['RUN_STATUS'] = np.nan
     
-    target_cols = ['PROD_DATE', 'LOT_NUMBER', 'MODEL', 'FS_CODE', 'COLOUR_PART', 'PART_NAME', 
-                   'PLANNED_COLOUR_QTY', 'WO_NUM', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 
-                   'DI_DATE', 'CUSTOMER_TYPE', 'COLOUR_CODE', 'SIDE_CODE', 'WO_NUM_+_FS_CODE', 
-                   'LINE', 'MODEL_TYPE', 'VARIANCE', 'CAMERA_APPLICABLE', 'ADDITIONAL_ATTRIBUTE', 'RUN_STATUS']
+    # 🔴 LOCK: Ini adalah susunan mutlak column yang akan keluar di fail download
+    target_cols = [
+        'PROD_DATE', 'LOT_NUMBER', 'MODEL', 'FS_CODE', 'COLOUR_PART', 'PART_NAME', 
+        'PLANNED_COLOUR_QTY', 'WO_NUM', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 
+        'DI_DATE', 'CUSTOMER_TYPE', 'COLOUR_CODE', 'SIDE_CODE', 'WO_NUM_+_FS_CODE', 
+        'LINE', 'MODEL_TYPE', 'VARIANCE', 'CAMERA_APPLICABLE', 'ADDITIONAL_ATTRIBUTE', 'RUN_STATUS'
+    ]
     
+    # Pastikan semua target cols wujud (walaupun kosong)
     for col in target_cols:
         if col not in df_clean.columns:
             df_clean[col] = np.nan
             
+    # Buang baris yang tiada WO_NUM dan re-order column ikut susunan rasmi
     df_final = df_clean[target_cols]
     df_final = df_final.dropna(subset=['WO_NUM'])
     
     return df_final
 
 def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
+    # 🔴 LOCK: Ini susunan mutlak untuk sheet OT
+    expected_cols = ['DATE', 'DAY', f'{prefix}_L1', f'{prefix}_L2']
+    
     if ot_col_idx >= len(df_pack.columns):
-        return pd.DataFrame(columns=['DATE', 'DAY', f'{prefix}_L1', f'{prefix}_L2'])
+        return pd.DataFrame(columns=expected_cols)
     
     df_ot = df_pack.iloc[:, [date_col_idx, ot_col_idx]].copy()
     df_ot.columns = ['DATE', f'{prefix}_L1']
@@ -190,68 +191,43 @@ def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
     df_ot = df_ot.dropna(subset=['DATE_PARSED']) 
     df_ot['DATE'] = df_ot['DATE_PARSED'].dt.date
     
+    # Logik ambil max OT jika tarikh sama
     df_ot[f'{prefix}_L1'] = pd.to_numeric(df_ot[f'{prefix}_L1'], errors='coerce')
     df_ot = df_ot.groupby('DATE', as_index=False).agg({f'{prefix}_L1': 'max'})
     
     df_ot['DAY'] = pd.to_datetime(df_ot['DATE']).dt.day_name().str.upper()
     df_ot[f'{prefix}_L2'] = np.nan
     
-    df_ot = df_ot[['DATE', 'DAY', f'{prefix}_L1', f'{prefix}_L2']]
+    # Re-order column ikut susunan rasmi
+    df_ot = df_ot[expected_cols]
+    
     return df_ot
 
 if uploaded_file is not None:
     try:
-        xls = pd.ExcelFile(uploaded_file)
-        dm_sheet_name = find_sheet(xls, ['WO LISTING', 'DM'])
-        oh_sheet_name = find_sheet(xls, ['WO LISTING', 'OH'])
-        pack_sheet_name = find_sheet(xls, ['PACK'])
-        
-        if not dm_sheet_name or not oh_sheet_name or not pack_sheet_name:
-            st.error("Ralat: Tidak menjumpai Sheet yang diperlukan.")
-            st.stop()
-            
-        df_dm_raw_check = pd.read_excel(xls, sheet_name=dm_sheet_name, header=1)
-        df_oh_raw_check = pd.read_excel(xls, sheet_name=oh_sheet_name, header=1)
-        df_pack_check = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
-        
-        wo_dm_lots = set(df_dm_raw_check['LOT NUMBER'].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
-        wo_oh_lots = set(df_oh_raw_check['LOT NUMBER'].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
-        all_wo_lots = wo_dm_lots.union(wo_oh_lots)
-        pack_lots = set(df_pack_check.iloc[:, 2].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
-        
-        missing_lots = pack_lots - all_wo_lots
-        missing_lots = {lot for lot in missing_lots if lot.startswith('M')}
-        
-        if missing_lots and not st.session_state.bypass_warning:
-            st.error("🚨 **AMARAN: DATA TERTINGGAL DALAM FAIL EXCEL ASAL!**")
-            st.warning(f"Sistem mendapati Lot Number ini wujud dalam sheet **PACK**, tetapi **TIDAK DITULIS / HILANG** dalam sheet **WO LISTING DM/OH**:\n\n👉 **{', '.join(missing_lots)}**")
-            
-            st.info("💡 **TINDAKAN:** Sila pilih salah satu daripada pilihan di bawah:")
-            
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if st.button("⚠️ Abaikan Amaran & Teruskan Download"):
-                    st.session_state.bypass_warning = True
-                    st.rerun() 
-            with col_b:
-                if st.button("❌ Batal & Buat Semula"):
-                    st.session_state.bypass_warning = False
-                    st.rerun()
-            st.stop()
-            
         with st.status("Kilang memproses data berjalan...", expanded=True) as status:
+            st.write("Menganalisis fail Excel...")
+            xls = pd.ExcelFile(uploaded_file)
+            
+            dm_sheet_name = find_sheet(xls, ['WO LISTING', 'DM'])
+            oh_sheet_name = find_sheet(xls, ['WO LISTING', 'OH'])
+            pack_sheet_name = find_sheet(xls, ['PACK'])
+            
+            if not dm_sheet_name or not oh_sheet_name or not pack_sheet_name:
+                st.error("Ralat: Tidak menjumpai Sheet yang diperlukan. Pastikan ada 'WO LISTING DM', 'WO LISTING OH', dan 'PACK'.")
+                st.stop()
+            
             st.write("Mengekstrak data barisan DM & OH...")
             df_dm_raw = pd.read_excel(xls, sheet_name=dm_sheet_name, header=None)
-            
-            # HANTAR STATUS BYPASS KE DALAM FUNGSI PEMPROSESAN
-            df_dm = process_wo_sheet(df_dm_raw, bypass_mode=st.session_state.bypass_warning)
+            df_dm = process_wo_sheet(df_dm_raw)
             
             df_oh_raw = pd.read_excel(xls, sheet_name=oh_sheet_name, header=None)
-            df_oh = process_wo_sheet(df_oh_raw, bypass_mode=st.session_state.bypass_warning)
+            df_oh = process_wo_sheet(df_oh_raw)
             
-            st.write("Menyusun jadual OT...")
-            df_dm_ot = process_ot_sheet(df_pack_check, 13, 15, "DM")
-            df_oh_ot = process_ot_sheet(df_pack_check, 34, 36, "OH")
+            st.write("Menyusun jadual OT (Kumpulan Tarikh Unik)...")
+            df_pack = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
+            df_dm_ot = process_ot_sheet(df_pack, 13, 15, "DM")
+            df_oh_ot = process_ot_sheet(df_pack, 34, 36, "OH")
             
             st.write("Membungkus ke dalam format akhir...")
             output = BytesIO()
@@ -261,6 +237,7 @@ if uploaded_file is not None:
                 df_dm_ot.to_excel(writer, sheet_name='DM_OT', index=False)
                 df_oh_ot.to_excel(writer, sheet_name='OH_OT', index=False)
                 
+                # Kosmetik / Styling (Warna biru di Header, Border penuh)
                 workbook = writer.book
                 header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
                 header_font = Font(color="FFFFFF", bold=True)
@@ -310,13 +287,10 @@ if uploaded_file is not None:
         
         st.divider()
         
-        if st.session_state.bypass_warning:
-            st.warning("⚠️ Fail ini dijana dengan Amaran Data Tidak Lengkap yang telah diabaikan. (Lot Number dibiarkan KOSONG)")
-            
         st.download_button(
             label="📥 DOWNLOAD DATABASE SEKARANG",
             data=processed_data,
-            file_name="Converted_Database_Schedule.xlsx",
+            file_name="Converted_Database_Schedule_FixedFormat.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
