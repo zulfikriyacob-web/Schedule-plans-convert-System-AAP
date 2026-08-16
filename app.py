@@ -5,15 +5,48 @@ from io import BytesIO
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
-st.set_page_config(page_title="Production Schedule Converter", page_icon="⚙️", layout="wide")
+# Konfigurasi muka depan Web App
+st.set_page_config(page_title="AAP Schedule Converter", page_icon="🏭", layout="wide")
 
-st.title("⚙️ Auto-Converter: Production Schedule (DM & OH)")
-st.write("Sila muat naik fail jadual asal di bawah. Sistem ini akan membersihkan data, menyusun *merged cells*, serta menarik maklumat OT secara automatik.")
+# CSS Khas untuk jadikan UI nampak 'Sempoi'
+st.markdown("""
+    <style>
+    .main-title {
+        text-align: center;
+        font-size: 3rem;
+        font-weight: 800;
+        background: -webkit-linear-gradient(#4facfe, #00f2fe);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        margin-bottom: 0px;
+    }
+    .sub-title {
+        text-align: center;
+        color: #888;
+        font-size: 1.2rem;
+        margin-bottom: 30px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
-uploaded_file = st.file_uploader("Upload File Excel (Format .xlsx)", type=['xlsx'])
+st.markdown('<p class="main-title">🚀 AAP Auto-Converter</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Tukar format jadual kilang dengan sekali petik. Cepat, kemas, dan sempoi.</p>', unsafe_allow_html=True)
 
+with st.expander("💡 Cara Penggunaan (Klik Sini)"):
+    st.info("""
+    1. Pastikan fail Excel asal mempunyai sheet **WO LISTING DM**, **WO LISTING OH**, dan sheet untuk **PACK**.
+    2. Tarik dan lepaskan (*drag & drop*) fail tersebut ke dalam ruang muat naik di bawah.
+    3. Sistem akan memproses data, menyusun *merged cells*, dan mengira OT secara automatik.
+    4. Klik butang Download untuk dapatkan fail database yang dah bersih!
+    """)
+
+st.divider()
+
+# Tempat upload
+uploaded_file = st.file_uploader("📂 Letak fail Excel bos kat sini...", type=['xlsx'])
+
+# Fungsi-fungsi pemprosesan (Sama macam sebelum ni)
 def find_sheet(xls, keywords):
-    """Cari nama sheet berdasarkan kata kunci (contoh: untuk support bulan Sept/Okt nanti)"""
     for sheet in xls.sheet_names:
         if all(k.upper() in sheet.upper() for k in keywords):
             return sheet
@@ -42,7 +75,6 @@ def process_wo_sheet(df):
     
     df_clean = df_clean.rename(columns=lambda x: col_mapping.get(x, x))
     
-    # Fill down merged cells
     cols_to_ffill = ['PROD_DATE', 'LOT_NUMBER', 'MODEL', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 'DI_DATE']
     for col in cols_to_ffill:
         if col in df_clean.columns:
@@ -143,22 +175,22 @@ def process_ot_sheet(df_pack, date_col_idx, ot_col_idx):
     df_ot = df_pack.iloc[:, [date_col_idx, ot_col_idx]].copy()
     df_ot.columns = ['PROD_DATE', 'OT']
     
-    # Filter out empty dates
     df_ot['PROD_DATE_PARSED'] = pd.to_datetime(df_ot['PROD_DATE'], errors='coerce')
     df_ot = df_ot.dropna(subset=['PROD_DATE_PARSED'])
     df_ot['PROD_DATE'] = df_ot['PROD_DATE_PARSED'].dt.date
     df_ot = df_ot.drop(columns=['PROD_DATE_PARSED'])
     
-    # Filter out empty OT rows
     df_ot = df_ot.dropna(subset=['OT'])
     return df_ot
 
+
 if uploaded_file is not None:
     try:
-        with st.spinner("Sistem sedang memproses data..."):
+        # UI Status Processing
+        with st.status("Kilang memproses data berjalan...", expanded=True) as status:
+            st.write("Menganalisis fail Excel...")
             xls = pd.ExcelFile(uploaded_file)
             
-            # Detect Sheets Dynamically
             dm_sheet_name = find_sheet(xls, ['WO LISTING', 'DM'])
             oh_sheet_name = find_sheet(xls, ['WO LISTING', 'OH'])
             pack_sheet_name = find_sheet(xls, ['PACK'])
@@ -167,24 +199,19 @@ if uploaded_file is not None:
                 st.error("Ralat: Tidak menjumpai Sheet yang diperlukan. Pastikan ada nama sheet yang mengandungi 'WO LISTING DM', 'WO LISTING OH', dan 'PACK'.")
                 st.stop()
             
-            # 1. Process DM
+            st.write("Mengekstrak data barisan DM & OH...")
             df_dm_raw = pd.read_excel(xls, sheet_name=dm_sheet_name, header=None)
             df_dm = process_wo_sheet(df_dm_raw)
             
-            # 2. Process OH
             df_oh_raw = pd.read_excel(xls, sheet_name=oh_sheet_name, header=None)
             df_oh = process_wo_sheet(df_oh_raw)
             
-            # 3. Process OT (DM & OH)
+            st.write("Mengira dan memisahkan data OT...")
             df_pack = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
-            
-            # DM OT: Col N (Index 13), Col P (Index 15)
             df_dm_ot = process_ot_sheet(df_pack, 13, 15)
-            
-            # OH OT: Col AI (Index 34), Col AK (Index 36)
             df_oh_ot = process_ot_sheet(df_pack, 34, 36)
             
-            # 4. Generate Excel in memory with styling
+            st.write("Membungkus ke dalam format akhir...")
             output = BytesIO()
             with pd.ExcelWriter(output, engine='openpyxl') as writer:
                 df_dm.to_excel(writer, sheet_name='DM', index=False)
@@ -220,14 +247,46 @@ if uploaded_file is not None:
 
             processed_data = output.getvalue()
             
-        st.success("Tadaaa! Selesai diproses.")
+            # Status lengkap
+            status.update(label="Proses Selesai Sepenuhnya!", state="complete", expanded=False)
         
+        # Kesan khas belon bila berjaya
+        st.balloons()
+        
+        # Dashboard Metrik Ringkas
+        st.markdown("### 📊 Rumusan Ekstrak Data")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Kuantiti WO (DM)", f"{len(df_dm)} Baris")
+        col2.metric("Kuantiti WO (OH)", f"{len(df_oh)} Baris")
+        col3.metric("Rekod OT (DM)", f"{len(df_dm_ot)} Hari")
+        col4.metric("Rekod OT (OH)", f"{len(df_oh_ot)} Hari")
+        
+        # Ruang Preview Jadual
+        st.markdown("### 👀 Intai Jadual")
+        tab1, tab2, tab3, tab4 = st.tabs(["Sheet DM", "Sheet OH", "Sheet DM_OT", "Sheet OH_OT"])
+        
+        with tab1:
+            st.dataframe(df_dm.head(15), use_container_width=True)
+            st.caption("Memaparkan 15 rekod terawal...")
+        with tab2:
+            st.dataframe(df_oh.head(15), use_container_width=True)
+            st.caption("Memaparkan 15 rekod terawal...")
+        with tab3:
+            st.dataframe(df_dm_ot, use_container_width=True)
+        with tab4:
+            st.dataframe(df_oh_ot, use_container_width=True)
+        
+        st.divider()
+        
+        # Butang Download lebih menonjol
         st.download_button(
-            label="📥 Download Database Excel Sekarang",
+            label="📥 DOWNLOAD DATABASE SEKARANG",
             data=processed_data,
             file_name="Converted_Database_Schedule.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True
         )
         
     except Exception as e:
-        st.error(f"Maaf, ada ralat berlaku: {e}")
+        st.error(f"Maaf, ralat berlaku: {e}")
+        st.stop()
