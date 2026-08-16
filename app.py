@@ -71,7 +71,6 @@ def process_wo_sheet(df):
     
     df_clean = df_clean.rename(columns=lambda x: col_mapping.get(x, x))
     
-    # Ini ffill untuk jadual WO LISTING (memang kena fill down supaya jadi database)
     cols_to_ffill = ['PROD_DATE', 'LOT_NUMBER', 'MODEL', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 'DI_DATE']
     for col in cols_to_ffill:
         if col in df_clean.columns:
@@ -172,18 +171,17 @@ def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
     df_ot = df_pack.iloc[:, [date_col_idx, ot_col_idx]].copy()
     df_ot.columns = ['DATE', f'{prefix}_L1']
     
-    # 1. Bersihkan column Tarikh
+    # 1. Bersihkan column Tarikh dan nilai
     df_ot['DATE_PARSED'] = pd.to_datetime(df_ot['DATE'], errors='coerce')
     df_ot = df_ot.dropna(subset=['DATE_PARSED']) 
-    
-    # 2. PENTING: Kerana sel OT di-merge di Excel, kita perlu fill down (ffill) 
-    # nilai OT tu ke semua baris tarikh yang sama
-    df_ot[f'{prefix}_L1'] = df_ot[f'{prefix}_L1'].ffill()
-    
     df_ot['DATE'] = df_ot['DATE_PARSED'].dt.date
     
-    # 3. PENTING: Buang tarikh yang berulang supaya tinggal 1 tarikh (1 baris) sahaja untuk setiap hari
-    df_ot = df_ot.drop_duplicates(subset=['DATE'], keep='first')
+    # Pastikan data OT adalah nombor, kalau tak jadi NaN (kosong)
+    df_ot[f'{prefix}_L1'] = pd.to_numeric(df_ot[f'{prefix}_L1'], errors='coerce')
+    
+    # 2. PENTING (LOGIK BARU): Kita satukan (group by) ikut tarikh. 
+    # Jika hari tu ada OT, ambil nilai tertinggi. Kalau tiada langsung, ia jadi kosong.
+    df_ot = df_ot.groupby('DATE', as_index=False).agg({f'{prefix}_L1': 'max'})
     
     # Dapatkan nama hari
     df_ot['DAY'] = pd.to_datetime(df_ot['DATE']).dt.day_name().str.upper()
@@ -217,7 +215,7 @@ if uploaded_file is not None:
             df_oh_raw = pd.read_excel(xls, sheet_name=oh_sheet_name, header=None)
             df_oh = process_wo_sheet(df_oh_raw)
             
-            st.write("Menyusun dan membuang tarikh OT yang berulang...")
+            st.write("Menyusun dan membaca OT secara bijak...")
             df_pack = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
             df_dm_ot = process_ot_sheet(df_pack, 13, 15, "DM")
             df_oh_ot = process_ot_sheet(df_pack, 34, 36, "OH")
