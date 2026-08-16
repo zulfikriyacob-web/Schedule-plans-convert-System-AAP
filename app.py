@@ -7,6 +7,10 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 
 st.set_page_config(page_title="AAP Schedule Converter", page_icon="🏭", layout="wide")
 
+# Set up memory (Session State) untuk butang Bypass
+if 'bypass_warning' not in st.session_state:
+    st.session_state.bypass_warning = False
+
 st.markdown("""
     <style>
     .main-title {
@@ -41,6 +45,10 @@ with st.expander("💡 Cara Penggunaan (Klik Sini)"):
 st.divider()
 
 uploaded_file = st.file_uploader("📂 Letak fail Excel bos kat sini...", type=['xlsx'])
+
+# Kalau user tukar fail, reset balik butang bypass tu
+if uploaded_file is None:
+    st.session_state.bypass_warning = False
 
 def find_sheet(xls, keywords):
     for sheet in xls.sheet_names:
@@ -188,49 +196,49 @@ def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
 
 if uploaded_file is not None:
     try:
+        xls = pd.ExcelFile(uploaded_file)
+        dm_sheet_name = find_sheet(xls, ['WO LISTING', 'DM'])
+        oh_sheet_name = find_sheet(xls, ['WO LISTING', 'OH'])
+        pack_sheet_name = find_sheet(xls, ['PACK'])
+        
+        if not dm_sheet_name or not oh_sheet_name or not pack_sheet_name:
+            st.error("Ralat: Tidak menjumpai Sheet yang diperlukan.")
+            st.stop()
+            
+        # 🔴 FORENSIC CROSS-CHECKING LOT NUMBERS
+        df_dm_raw_check = pd.read_excel(xls, sheet_name=dm_sheet_name, header=1)
+        df_oh_raw_check = pd.read_excel(xls, sheet_name=oh_sheet_name, header=1)
+        df_pack_check = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
+        
+        wo_dm_lots = set(df_dm_raw_check['LOT NUMBER'].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
+        wo_oh_lots = set(df_oh_raw_check['LOT NUMBER'].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
+        all_wo_lots = wo_dm_lots.union(wo_oh_lots)
+        pack_lots = set(df_pack_check.iloc[:, 2].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
+        
+        missing_lots = pack_lots - all_wo_lots
+        missing_lots = {lot for lot in missing_lots if lot.startswith('M')}
+        
+        # Block sistem HANYA jika ada ralat DAN user belum tekan butang Bypass
+        if missing_lots and not st.session_state.bypass_warning:
+            st.error("🚨 **AMARAN: DATA TERTINGGAL DALAM FAIL EXCEL ASAL!**")
+            st.warning(f"Sistem mendapati Lot Number ini wujud dalam sheet **PACK**, tetapi **TIDAK DITULIS / HILANG** dalam sheet **WO LISTING DM/OH**:\n\n👉 **{', '.join(missing_lots)}**")
+            
+            st.info("💡 **TINDAKAN:** Sila pilih salah satu daripada pilihan di bawah:")
+            
+            col_a, col_b = st.columns(2)
+            with col_a:
+                if st.button("⚠️ Abaikan Amaran & Teruskan Download"):
+                    st.session_state.bypass_warning = True
+                    st.rerun() # Rerun skrip supaya dia pass block ini
+            with col_b:
+                if st.button("❌ Batal & Buat Semula"):
+                    st.session_state.bypass_warning = False
+                    st.rerun()
+            st.stop() # Hentikan di sini sehingga user pilih butang
+            
+        # --- JIKA TIADA RALAT ATAU USER DAH TEKAN BYPASS ---
         with st.status("Kilang memproses data berjalan...", expanded=True) as status:
-            st.write("Menganalisis fail Excel...")
-            xls = pd.ExcelFile(uploaded_file)
-            
-            dm_sheet_name = find_sheet(xls, ['WO LISTING', 'DM'])
-            oh_sheet_name = find_sheet(xls, ['WO LISTING', 'OH'])
-            pack_sheet_name = find_sheet(xls, ['PACK'])
-            
-            if not dm_sheet_name or not oh_sheet_name or not pack_sheet_name:
-                st.error("Ralat: Tidak menjumpai Sheet yang diperlukan.")
-                st.stop()
-                
-            # 🔴 ADVANCED FEATURE: FORENSIC CROSS-CHECKING LOT NUMBERS
-            st.write("Menjalankan imbasan forensik Lot Number (Cross-Check)...")
-            
-            # Baca data mentah tanpa fill down
-            df_dm_raw_check = pd.read_excel(xls, sheet_name=dm_sheet_name, header=1)
-            df_oh_raw_check = pd.read_excel(xls, sheet_name=oh_sheet_name, header=1)
-            df_pack_check = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
-            
-            # Kumpul Lot Number dari WO LISTING (semua yang ditaip secara manual)
-            wo_dm_lots = set(df_dm_raw_check['LOT NUMBER'].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
-            wo_oh_lots = set(df_oh_raw_check['LOT NUMBER'].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
-            all_wo_lots = wo_dm_lots.union(wo_oh_lots)
-            
-            # Kumpul Lot Number dari PACK sheet (Kolum C / Index 2)
-            pack_lots = set(df_pack_check.iloc[:, 2].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
-            
-            # Cari jika ada lot di PACK yang tak pernah ditulis dalam WO LISTING
-            missing_lots = pack_lots - all_wo_lots
-            
-            # Abaikan item yang bukan rupa format Lot Number (contoh: teks biasa)
-            missing_lots = {lot for lot in missing_lots if lot.startswith('M')}
-            
-            if missing_lots:
-                status.update(label="Ralat Data Ditemui!", state="error", expanded=True)
-                st.error("🚨 **AMARAN: DATA TERTINGGAL DALAM FAIL EXCEL ASAL!**")
-                st.warning(f"Sistem mendapati Lot Number ini wujud dalam sheet **PACK**, tetapi **TIDAK DITULIS / HILANG** dalam sheet **WO LISTING DM/OH**:\n\n👉 **{', '.join(missing_lots)}**")
-                st.info("💡 **CARA BETULKAN:** Sila buka fail asal Excel bos, cari baris yang sepatutnya untuk Lot di atas, dan taipkan secara manual di ruangan Lot Number. Kemudian *save* dan muat naik semula ke sini.")
-                st.stop() # Hentikan proses serta merta
-                
-            # Jika lulus cross-check, teruskan proses macam biasa
-            st.write("Semakan data lulus. Mengekstrak jadual penuh...")
+            st.write("Mengekstrak data barisan DM & OH...")
             df_dm_raw = pd.read_excel(xls, sheet_name=dm_sheet_name, header=None)
             df_dm = process_wo_sheet(df_dm_raw)
             
@@ -238,9 +246,8 @@ if uploaded_file is not None:
             df_oh = process_wo_sheet(df_oh_raw)
             
             st.write("Menyusun jadual OT...")
-            df_pack = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
-            df_dm_ot = process_ot_sheet(df_pack, 13, 15, "DM")
-            df_oh_ot = process_ot_sheet(df_pack, 34, 36, "OH")
+            df_dm_ot = process_ot_sheet(df_pack_check, 13, 15, "DM")
+            df_oh_ot = process_ot_sheet(df_pack_check, 34, 36, "OH")
             
             st.write("Membungkus ke dalam format akhir...")
             output = BytesIO()
@@ -278,6 +285,7 @@ if uploaded_file is not None:
         
         st.balloons()
         
+        # Dashboard
         st.markdown("### 📊 Rumusan Ekstrak Data")
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Kuantiti WO (DM)", f"{len(df_dm)} Baris")
@@ -290,10 +298,8 @@ if uploaded_file is not None:
         
         with tab1:
             st.dataframe(df_dm.head(15), use_container_width=True)
-            st.caption("Memaparkan 15 rekod terawal...")
         with tab2:
             st.dataframe(df_oh.head(15), use_container_width=True)
-            st.caption("Memaparkan 15 rekod terawal...")
         with tab3:
             st.dataframe(df_dm_ot, use_container_width=True)
         with tab4:
@@ -301,6 +307,9 @@ if uploaded_file is not None:
         
         st.divider()
         
+        if st.session_state.bypass_warning:
+            st.warning("⚠️ Fail ini dijana dengan Amaran Data Tidak Lengkap yang telah diabaikan.")
+            
         st.download_button(
             label="📥 DOWNLOAD DATABASE SEKARANG",
             data=processed_data,
