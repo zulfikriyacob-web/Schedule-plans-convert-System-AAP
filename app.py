@@ -55,6 +55,10 @@ def process_wo_sheet(df):
     df_clean.columns = headers
     df_clean = df_clean.dropna(how='all')
     
+    # 🔴 FEATURE BARU: Musnahkan semua sel yang cuma ada butang Space (jarak) 
+    # untuk elak isu Fill Down tersangkut
+    df_clean = df_clean.replace(r'^\s*$', np.nan, regex=True)
+    
     col_mapping = {
         'PROD DATE': 'PROD_DATE',
         'LOT NUMBER': 'LOT_NUMBER',
@@ -171,25 +175,17 @@ def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
     df_ot = df_pack.iloc[:, [date_col_idx, ot_col_idx]].copy()
     df_ot.columns = ['DATE', f'{prefix}_L1']
     
-    # 1. Bersihkan column Tarikh dan nilai
     df_ot['DATE_PARSED'] = pd.to_datetime(df_ot['DATE'], errors='coerce')
     df_ot = df_ot.dropna(subset=['DATE_PARSED']) 
     df_ot['DATE'] = df_ot['DATE_PARSED'].dt.date
     
-    # Pastikan data OT adalah nombor, kalau tak jadi NaN (kosong)
     df_ot[f'{prefix}_L1'] = pd.to_numeric(df_ot[f'{prefix}_L1'], errors='coerce')
     
-    # 2. PENTING (LOGIK BARU): Kita satukan (group by) ikut tarikh. 
-    # Jika hari tu ada OT, ambil nilai tertinggi. Kalau tiada langsung, ia jadi kosong.
     df_ot = df_ot.groupby('DATE', as_index=False).agg({f'{prefix}_L1': 'max'})
     
-    # Dapatkan nama hari
     df_ot['DAY'] = pd.to_datetime(df_ot['DATE']).dt.day_name().str.upper()
-    
-    # Masukkan column L2 yang kosong
     df_ot[f'{prefix}_L2'] = np.nan
     
-    # Susun kedudukan column
     df_ot = df_ot[['DATE', 'DAY', f'{prefix}_L1', f'{prefix}_L2']]
     
     return df_ot
@@ -208,7 +204,7 @@ if uploaded_file is not None:
                 st.error("Ralat: Tidak menjumpai Sheet yang diperlukan. Pastikan ada nama sheet yang mengandungi 'WO LISTING DM', 'WO LISTING OH', dan 'PACK'.")
                 st.stop()
             
-            st.write("Mengekstrak data barisan DM & OH...")
+            st.write("Mengekstrak data barisan DM & OH (Mod Anti-Hantu Jarak Aktif)...")
             df_dm_raw = pd.read_excel(xls, sheet_name=dm_sheet_name, header=None)
             df_dm = process_wo_sheet(df_dm_raw)
             
@@ -277,10 +273,8 @@ if uploaded_file is not None:
             st.caption("Memaparkan 15 rekod terawal...")
         with tab3:
             st.dataframe(df_dm_ot, use_container_width=True)
-            st.caption("Tarikh berulang telah dibuang, memaparkan 1 rekod per hari.")
         with tab4:
             st.dataframe(df_oh_ot, use_container_width=True)
-            st.caption("Tarikh berulang telah dibuang, memaparkan 1 rekod per hari.")
         
         st.divider()
         
