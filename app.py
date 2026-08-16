@@ -55,8 +55,6 @@ def process_wo_sheet(df):
     df_clean.columns = headers
     df_clean = df_clean.dropna(how='all')
     
-    # 🔴 FEATURE BARU: Musnahkan semua sel yang cuma ada butang Space (jarak) 
-    # untuk elak isu Fill Down tersangkut
     df_clean = df_clean.replace(r'^\s*$', np.nan, regex=True)
     
     col_mapping = {
@@ -180,14 +178,12 @@ def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
     df_ot['DATE'] = df_ot['DATE_PARSED'].dt.date
     
     df_ot[f'{prefix}_L1'] = pd.to_numeric(df_ot[f'{prefix}_L1'], errors='coerce')
-    
     df_ot = df_ot.groupby('DATE', as_index=False).agg({f'{prefix}_L1': 'max'})
     
     df_ot['DAY'] = pd.to_datetime(df_ot['DATE']).dt.day_name().str.upper()
     df_ot[f'{prefix}_L2'] = np.nan
     
     df_ot = df_ot[['DATE', 'DAY', f'{prefix}_L1', f'{prefix}_L2']]
-    
     return df_ot
 
 if uploaded_file is not None:
@@ -201,17 +197,47 @@ if uploaded_file is not None:
             pack_sheet_name = find_sheet(xls, ['PACK'])
             
             if not dm_sheet_name or not oh_sheet_name or not pack_sheet_name:
-                st.error("Ralat: Tidak menjumpai Sheet yang diperlukan. Pastikan ada nama sheet yang mengandungi 'WO LISTING DM', 'WO LISTING OH', dan 'PACK'.")
+                st.error("Ralat: Tidak menjumpai Sheet yang diperlukan.")
                 st.stop()
+                
+            # 🔴 ADVANCED FEATURE: FORENSIC CROSS-CHECKING LOT NUMBERS
+            st.write("Menjalankan imbasan forensik Lot Number (Cross-Check)...")
             
-            st.write("Mengekstrak data barisan DM & OH (Mod Anti-Hantu Jarak Aktif)...")
+            # Baca data mentah tanpa fill down
+            df_dm_raw_check = pd.read_excel(xls, sheet_name=dm_sheet_name, header=1)
+            df_oh_raw_check = pd.read_excel(xls, sheet_name=oh_sheet_name, header=1)
+            df_pack_check = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
+            
+            # Kumpul Lot Number dari WO LISTING (semua yang ditaip secara manual)
+            wo_dm_lots = set(df_dm_raw_check['LOT NUMBER'].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
+            wo_oh_lots = set(df_oh_raw_check['LOT NUMBER'].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
+            all_wo_lots = wo_dm_lots.union(wo_oh_lots)
+            
+            # Kumpul Lot Number dari PACK sheet (Kolum C / Index 2)
+            pack_lots = set(df_pack_check.iloc[:, 2].replace(r'^\s*$', np.nan, regex=True).dropna().astype(str).str.strip().unique())
+            
+            # Cari jika ada lot di PACK yang tak pernah ditulis dalam WO LISTING
+            missing_lots = pack_lots - all_wo_lots
+            
+            # Abaikan item yang bukan rupa format Lot Number (contoh: teks biasa)
+            missing_lots = {lot for lot in missing_lots if lot.startswith('M')}
+            
+            if missing_lots:
+                status.update(label="Ralat Data Ditemui!", state="error", expanded=True)
+                st.error("🚨 **AMARAN: DATA TERTINGGAL DALAM FAIL EXCEL ASAL!**")
+                st.warning(f"Sistem mendapati Lot Number ini wujud dalam sheet **PACK**, tetapi **TIDAK DITULIS / HILANG** dalam sheet **WO LISTING DM/OH**:\n\n👉 **{', '.join(missing_lots)}**")
+                st.info("💡 **CARA BETULKAN:** Sila buka fail asal Excel bos, cari baris yang sepatutnya untuk Lot di atas, dan taipkan secara manual di ruangan Lot Number. Kemudian *save* dan muat naik semula ke sini.")
+                st.stop() # Hentikan proses serta merta
+                
+            # Jika lulus cross-check, teruskan proses macam biasa
+            st.write("Semakan data lulus. Mengekstrak jadual penuh...")
             df_dm_raw = pd.read_excel(xls, sheet_name=dm_sheet_name, header=None)
             df_dm = process_wo_sheet(df_dm_raw)
             
             df_oh_raw = pd.read_excel(xls, sheet_name=oh_sheet_name, header=None)
             df_oh = process_wo_sheet(df_oh_raw)
             
-            st.write("Menyusun dan membaca OT secara bijak...")
+            st.write("Menyusun jadual OT...")
             df_pack = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
             df_dm_ot = process_ot_sheet(df_pack, 13, 15, "DM")
             df_oh_ot = process_ot_sheet(df_pack, 34, 36, "OH")
@@ -233,19 +259,16 @@ if uploaded_file is not None:
 
                 for sheet_name in workbook.sheetnames:
                     ws = workbook[sheet_name]
-                    
                     for cell in ws[1]:
                         cell.fill = header_fill
                         cell.font = header_font
                         cell.alignment = Alignment(horizontal='center', vertical='center')
-                        
                     for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=ws.max_column):
                         for cell in row:
                             cell.border = border
                             cell.alignment = alignment
                             if isinstance(cell.value, pd.Timestamp) or type(cell.value).__name__ == 'date':
                                 cell.number_format = 'DD/MM/YYYY'
-                            
                     for column_cells in ws.columns:
                         length = max(len(str(cell.value)) for cell in column_cells)
                         ws.column_dimensions[column_cells[0].column_letter].width = min(length + 2, 30)
