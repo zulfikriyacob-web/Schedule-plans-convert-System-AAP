@@ -33,15 +33,15 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.markdown('<p class="main-title">🚀 AAP Auto-Converter</p>', unsafe_allow_html=True)
-st.markdown('<p class="sub-title">Sistem Pengekstrakan Jadual Kilang Rasmi (Logik Lanjutan)</p>', unsafe_allow_html=True)
+st.markdown('<p class="sub-title">Sistem Pengekstrakan Jadual Kilang Rasmi (Logik Lanjutan & Pemotong Lot)</p>', unsafe_allow_html=True)
 
 with st.expander("💡 Cara Penggunaan & Logik Sistem (Klik Sini)"):
     st.info("""
     1. Pastikan fail Excel asal mempunyai sheet **WO LISTING DM**, **WO LISTING OH**, dan sheet **PACK**.
     2. Tarik dan lepaskan (*drag & drop*) fail tersebut ke dalam ruang muat naik di bawah.
-    3. **Logik DM Aktif:** Membaca pasangan RH-L dan RH-R berdasarkan kuantiti warna.
-    4. **Logik OH Aktif:** Membaca pecahan L RR, R RR, L FR, R FR mengikut kuantiti total.
-    5. Sistem akan kesan Lot Number yang hilang, buang *space* tersembunyi, dan susun format *column*.
+    3. **Logik DM Aktif:** Mengira jumlah pasangan (Warna x 2 baris) dari Pack.
+    4. **Logik OH Aktif:** Mengira jumlah baris (Qty 120/60) dari Pack.
+    5. Sistem akan kesan Lot Number yang hilang, keluarkan amaran, dan *padam lebihan Fill Down* secara automatik.
     """)
 
 st.divider()
@@ -57,7 +57,30 @@ def find_sheet(xls, keywords):
             return sheet
     return None
 
-def process_wo_sheet(df, sheet_type="DM", bypass_mode=False):
+def process_wo_sheet(df, df_pack, sheet_type="DM"):
+    # 🔴 LOGIK DEWA 1: Mengira 'Expected Rows' (Baris Sepatutnya) dari Sheet PACK
+    expected_rows = {}
+    if sheet_type == "DM":
+        for idx, row in df_pack.iterrows():
+            lot = str(row[2]).strip()
+            if pd.isna(lot) or lot == 'nan' or not lot.startswith('M'):
+                continue
+            colors_count = row[4:12].notna().sum()
+            expected_rows[lot] = colors_count * 2
+    elif sheet_type == "OH":
+        for idx, row in df_pack.iterrows():
+            lot = str(row[22]).strip()
+            if pd.isna(lot) or lot == 'nan' or not lot.startswith('M'):
+                continue
+            colors_count = row[24:32].notna().sum()
+            total_qty = row[33]
+            if total_qty == 120:
+                expected_rows[lot] = colors_count * 4
+            elif total_qty == 60:
+                expected_rows[lot] = colors_count * 2
+            else:
+                expected_rows[lot] = colors_count * 4 # Default safety
+                
     header_idx = 1
     headers = df.iloc[header_idx].values
     df_clean = df.iloc[header_idx + 1:].copy()
@@ -80,19 +103,34 @@ def process_wo_sheet(df, sheet_type="DM", bypass_mode=False):
         'WO SUPPLY TO IMC': 'WO_SUPPLY_TO_IMC_DATE',
         'Closing Date': 'DI_DATE'
     }
-    
     df_clean = df_clean.rename(columns=lambda x: col_mapping.get(x, x))
     
+    # Fill Down Diteruskan (Supaya yang valid terisi)
     cols_to_ffill = ['PROD_DATE', 'LOT_NUMBER', 'MODEL', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 'DI_DATE']
-    
-    # JIKA BYPASS: Kita jangan ffill LOT_NUMBER, biarkan ia KOSONG (Lopong) untuk baris yang salah
-    if bypass_mode:
-        cols_to_ffill.remove('LOT_NUMBER')
-        
     for col in cols_to_ffill:
         if col in df_clean.columns:
             df_clean[col] = df_clean[col].ffill()
-    
+            
+    # 🔴 LOGIK DEWA 2: Memotong (Truncate) Lot Number yang meleret (Sila rujuk PACK)
+    if 'LOT_NUMBER' in df_clean.columns:
+        current_lot = None
+        consecutive_count = 0
+        for i in df_clean.index:
+            lot = str(df_clean.at[i, 'LOT_NUMBER']).strip()
+            if lot != current_lot:
+                current_lot = lot
+                consecutive_count = 1
+            else:
+                consecutive_count += 1
+            
+            # Semak had limit baris untuk lot ini berdasarkan PACK
+            expected = expected_rows.get(lot, 999) # 999 jika tak jumpa
+            
+            # Jika baris tu melimpah dari sepatutnya, kosongkan ia! (Lopongkan)
+            if consecutive_count > expected:
+                df_clean.at[i, 'LOT_NUMBER'] = np.nan
+                
+    # Pengurusan Tarikh dan Kosmetik
     date_columns = ['PROD_DATE', 'WO_SUPPLY_TO_IMC_DATE', 'DI_DATE']
     for col in date_columns:
         if col in df_clean.columns:
@@ -127,15 +165,12 @@ def process_wo_sheet(df, sheet_type="DM", bypass_mode=False):
     else:
          df_clean['COLOUR_CODE'] = ''
 
-    # 🔴 IMPLEMENTASI LOGIC RULE KILANG BOS (DM & OH)
     def get_side_logic(name, type_sheet):
         name = str(name).upper()
         if type_sheet == "DM":
-            # Logik DM: 1 Lot -> 2 Side (RH-L & RH-R)
             if 'RH-L' in name or 'LEFT' in name: return 'RH-L'
             if 'RH-R' in name or 'RIGHT' in name: return 'RH-R'
         elif type_sheet == "OH":
-            # Logik OH: Pecahan Front dan Rear
             if 'L RR' in name or 'LEFT REAR' in name: return 'L RR'
             if 'R RR' in name or 'RIGHT REAR' in name: return 'R RR'
             if 'L FR' in name or 'LEFT FRONT' in name: return 'L FR'
@@ -172,7 +207,7 @@ def process_wo_sheet(df, sheet_type="DM", bypass_mode=False):
     df_clean['ADDITIONAL_ATTRIBUTE'] = np.nan
     df_clean['RUN_STATUS'] = np.nan
     
-    # 🔴 FORMAT LOCK: 21 Column Tetap
+    # 🔴 FORMAT LOCK
     target_cols = [
         'PROD_DATE', 'LOT_NUMBER', 'MODEL', 'FS_CODE', 'COLOUR_PART', 'PART_NAME', 
         'PLANNED_COLOUR_QTY', 'WO_NUM', 'planner_remarks', 'WO_SUPPLY_TO_IMC_DATE', 
@@ -191,23 +226,18 @@ def process_wo_sheet(df, sheet_type="DM", bypass_mode=False):
 
 def process_ot_sheet(df_pack, date_col_idx, ot_col_idx, prefix):
     expected_cols = ['DATE', 'DAY', f'{prefix}_L1', f'{prefix}_L2']
-    
     if ot_col_idx >= len(df_pack.columns):
         return pd.DataFrame(columns=expected_cols)
     
     df_ot = df_pack.iloc[:, [date_col_idx, ot_col_idx]].copy()
     df_ot.columns = ['DATE', f'{prefix}_L1']
-    
     df_ot['DATE_PARSED'] = pd.to_datetime(df_ot['DATE'], errors='coerce')
     df_ot = df_ot.dropna(subset=['DATE_PARSED']) 
     df_ot['DATE'] = df_ot['DATE_PARSED'].dt.date
-    
     df_ot[f'{prefix}_L1'] = pd.to_numeric(df_ot[f'{prefix}_L1'], errors='coerce')
     df_ot = df_ot.groupby('DATE', as_index=False).agg({f'{prefix}_L1': 'max'})
-    
     df_ot['DAY'] = pd.to_datetime(df_ot['DATE']).dt.day_name().str.upper()
     df_ot[f'{prefix}_L2'] = np.nan
-    
     df_ot = df_ot[expected_cols]
     return df_ot
 
@@ -222,7 +252,6 @@ if uploaded_file is not None:
             st.error("Ralat: Tidak menjumpai Sheet yang diperlukan.")
             st.stop()
             
-        # 🔴 WARNING BLOCKER (Forensic Cross-Check)
         df_dm_raw_check = pd.read_excel(xls, sheet_name=dm_sheet_name, header=1)
         df_oh_raw_check = pd.read_excel(xls, sheet_name=oh_sheet_name, header=1)
         df_pack_check = pd.read_excel(xls, sheet_name=pack_sheet_name, header=None)
@@ -252,14 +281,14 @@ if uploaded_file is not None:
             st.stop()
             
         with st.status("Kilang memproses data berjalan...", expanded=True) as status:
-            st.write("Mengekstrak data barisan DM & OH dengan LOGIK KILANG...")
+            st.write("Mengekstrak data dengan Logik Pemotong Lebihan Lot (Truncator)...")
             df_dm_raw = pd.read_excel(xls, sheet_name=dm_sheet_name, header=None)
-            df_dm = process_wo_sheet(df_dm_raw, sheet_type="DM", bypass_mode=st.session_state.bypass_warning)
+            df_dm = process_wo_sheet(df_dm_raw, df_pack_check, sheet_type="DM")
             
             df_oh_raw = pd.read_excel(xls, sheet_name=oh_sheet_name, header=None)
-            df_oh = process_wo_sheet(df_oh_raw, sheet_type="OH", bypass_mode=st.session_state.bypass_warning)
+            df_oh = process_wo_sheet(df_oh_raw, df_pack_check, sheet_type="OH")
             
-            st.write("Menyusun jadual OT (Kumpulan Tarikh Unik)...")
+            st.write("Menyusun jadual OT...")
             df_dm_ot = process_ot_sheet(df_pack_check, 13, 15, "DM")
             df_oh_ot = process_ot_sheet(df_pack_check, 34, 36, "OH")
             
@@ -321,7 +350,7 @@ if uploaded_file is not None:
         st.divider()
         
         if st.session_state.bypass_warning:
-            st.warning("⚠️ Fail ini dijana dengan Amaran Data Tidak Lengkap yang telah diabaikan. (Lot Number dibiarkan KOSONG)")
+            st.warning("⚠️ Fail ini dijana dengan Amaran Data Tidak Lengkap yang telah diabaikan. (Logik Pemotong Lot diaktifkan).")
             
         st.download_button(
             label="📥 DOWNLOAD DATABASE SEKARANG",
